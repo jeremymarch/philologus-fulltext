@@ -1,0 +1,19 @@
+[package]
+name = "philologus-fulltext"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "philologus_fulltext"
+crate-type = ["cdylib", "staticlib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/uniffi-bindgen.rs"
+
+[dependencies]
+tantivy = "0.22.0" #0.21.1
+uniffi = { version = "0.31.0", features = ["cli"] }
+
+[build-dependencies]
+uniffi = { version = "0.31.0", features = ["build"] }
