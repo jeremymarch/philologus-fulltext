@@ -5,6 +5,7 @@ use tantivy::collector::{Count, TopDocs};
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
 use tantivy::snippet::SnippetGenerator;
+use tantivy::tokenizer::*;
 use tantivy::{Index, ReloadPolicy};
 
 #[derive(uniffi::Record)]
@@ -25,6 +26,15 @@ impl FullTextWrapper {
     #[uniffi::constructor]
     pub fn new(tantivy_index_path: &str) -> Self {
         let index = Index::open_in_dir(tantivy_index_path).unwrap();
+        let en_stem_analyzer = TextAnalyzer::builder(SimpleTokenizer::default())
+            //.filter(StopWordFilter::new(Language::Greek))
+            .filter(LowerCaser)
+            .filter(NoDiacritcs)
+            .filter(Stemmer::new(Language::English))
+            //.filter(Stemmer::new(Language::Greek))
+            .build();
+
+        index.tokenizers().register("el_stem", en_stem_analyzer);
         Self { index }
     }
 
@@ -310,13 +320,93 @@ impl FullTextWrapper {
     }
 }
 
+use polytonic_greek::hgk_strip_diacritics;
+use std::mem;
+
+use tantivy::tokenizer::{Token, TokenFilter, TokenStream, Tokenizer};
+
+/// Token filter that removes diacritics from terms.
+#[derive(Clone)]
+pub struct NoDiacritcs;
+
+impl TokenFilter for NoDiacritcs {
+    type Tokenizer<T: Tokenizer> = DiacriticFilter<T>;
+
+    fn transform<T: Tokenizer>(self, tokenizer: T) -> Self::Tokenizer<T> {
+        DiacriticFilter {
+            tokenizer,
+            buffer: String::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct DiacriticFilter<T> {
+    tokenizer: T,
+    buffer: String,
+}
+
+impl<T: Tokenizer> Tokenizer for DiacriticFilter<T> {
+    type TokenStream<'a> = DiacriticTokenStream<'a, T::TokenStream<'a>>;
+
+    fn token_stream<'a>(&'a mut self, text: &'a str) -> Self::TokenStream<'a> {
+        self.buffer.clear();
+        DiacriticTokenStream {
+            tail: self.tokenizer.token_stream(text),
+            buffer: &mut self.buffer,
+        }
+    }
+}
+
+pub struct DiacriticTokenStream<'a, T> {
+    buffer: &'a mut String,
+    tail: T,
+}
+
+// writes a lowercased version of text into output.
+fn to_diacritic_free_unicode(text: &str, output: &mut String) {
+    output.clear();
+    output.reserve(50);
+    // for c in text.chars() {
+    //     // Contrary to the std, we do not take care of sigma special case.
+    //     // This will have an normalizationo effect, which is ok for search.
+    //     output.extend(c.to_lowercase());
+    // }
+    let stripped = hgk_strip_diacritics(text, 0xFFFFFFFF);
+    output.push_str(&stripped);
+}
+
+impl<T: TokenStream> TokenStream for DiacriticTokenStream<'_, T> {
+    fn advance(&mut self) -> bool {
+        if !self.tail.advance() {
+            return false;
+        }
+        // if self.token_mut().text.is_ascii() {
+        //     // fast track for ascii.
+        //     self.token_mut().text.make_ascii_lowercase();
+        // } else {
+        to_diacritic_free_unicode(&self.tail.token().text, self.buffer);
+        mem::swap(&mut self.tail.token_mut().text, self.buffer);
+        //}
+        true
+    }
+
+    fn token(&self) -> &Token {
+        self.tail.token()
+    }
+
+    fn token_mut(&mut self) -> &mut Token {
+        self.tail.token_mut()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn ft_test() {
-        let index_path = "../philologus-lex-loader/tantivy-datav3";
+        let index_path = "../philologus-lex-loader/tantivy-datav4";
         let query = "example";
         let page = 1;
 
@@ -328,8 +418,8 @@ mod tests {
 
     #[test]
     fn ft_test_snippets() {
-        let index_path = "../philologus-lex-loader/tantivy-datav3";
-        let query = "dog";
+        let index_path = "../philologus-lex-loader/tantivy-datav4";
+        let query = "fero";
         let page = 1;
 
         let ft = FullTextWrapper::new(index_path);
